@@ -116,9 +116,9 @@
   </div>
 
   <div class="card">
-    <h2>1. Cane pieces (before shredding)</h2>
+    <h2>Photos 1 and 2: sugarcane, NOT shredded</h2>
     <div class="slots" id="slotsA"></div>
-    <h2 style="margin-top:14px">2. Shredded cane (in container)</h2>
+    <h2 style="margin-top:14px">Photos 3 and 4: sample (shredded cane)</h2>
     <div class="slots" id="slotsB"></div>
     <div class="hint">Photo rules: plain background, good light, no shadow, sharp image, same distance every time.</div>
     <button class="btn btn-main" id="saveBtn" disabled>Save sample</button>
@@ -152,16 +152,16 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 /* ===== SETTINGS ===== */
-const VERSION = "v1.3";
+const VERSION = "v1.4";
 const UPLOAD_URL = "https://www.dropbox.com/request/lwvop1m4tbrhmf83gvmi";
 const MAX_SIDE = 2400;          // max photo size in pixels (long side)
 const JPEG_Q = 0.92;
 const SAMPLES_PER_ZIP = 8;      // keeps each ZIP small for the phone
 const SLOTS = [
-  { key: "pieces-overview",   label: "Pieces: overview",   tip: "All pieces, whole view",        group: "A", idx: 1 },
-  { key: "pieces-closeup",    label: "Pieces: close-up",   tip: "Cut surface, close",            group: "A", idx: 2 },
-  { key: "shredded-top",      label: "Shredded: top view", tip: "Container from above",          group: "B", idx: 3 },
-  { key: "shredded-closeup",  label: "Shredded: close-up", tip: "Fibres, close",                 group: "B", idx: 4 }
+  { key: "cane-overview",    label: "Photo 1: cane",    tip: "Not shredded, whole view",     group: "A", idx: 1 },
+  { key: "cane-closeup",     label: "Photo 2: cane",    tip: "Not shredded, close-up",       group: "A", idx: 2 },
+  { key: "sample-top",       label: "Photo 3: sample",  tip: "Shredded, container from above", group: "B", idx: 3 },
+  { key: "sample-closeup",   label: "Photo 4: sample",  tip: "Shredded, fibres close-up",    group: "B", idx: 4 }
 ];
 
 /* ===== HELPERS ===== */
@@ -463,6 +463,17 @@ $("clearBtn").onclick = async () => {
   if (UPLOAD_URL) $("uploadBtn").style.display = "block";
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   await openDB();
+  /* Hidden full reset, only through the link ...?reset=1 (not shown in the app) */
+  if (new URLSearchParams(location.search).get("reset") === "1") {
+    if (confirm("Delete ALL samples, photos and history on this phone and start from zero?")) {
+      const tx = db.transaction(["meta", "photos", "draft"], "readwrite");
+      ["meta", "photos", "draft"].forEach(s => tx.objectStore(s).clear());
+      await txDone(tx);
+      alert("Done. The app starts from zero.");
+    }
+    location.replace(location.pathname);
+    return;
+  }
   await refresh();
   const metas = await allMeta();
   const same = metas.filter(m => m.campaign === today());
