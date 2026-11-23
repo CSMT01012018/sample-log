@@ -62,11 +62,42 @@
     transition: opacity .25s; pointer-events: none; z-index: 10; }
   .toast.show { opacity: 1; }
   .warn { color: var(--warn); font-size: 13px; margin-top: 6px; display: none; }
+  .cam { position: fixed; inset: 0; background: #000; z-index: 20; display: none; flex-direction: column; }
+  .cam.on { display: flex; }
+  .cam-top { color: #fff; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; }
+  .cam-top b { font-size: 16px; }
+  .cam-x { background: none; border: 0; color: #fff; font-size: 26px; padding: 4px 10px; }
+  .cam video { flex: 1; width: 100%; min-height: 0; object-fit: contain; background: #000; }
+  .cam-bot { padding: 18px 16px 26px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .shutter { width: 74px; height: 74px; border-radius: 50%; background: #fff; border: 5px solid #9fb3a8; }
+  .shutter:active { transform: scale(.94); }
+  .cam-alt { color: #cfd8d3; font-size: 13px; text-decoration: underline; background: none; border: 0; }
+  .tabs { display: flex; background: var(--green); padding: 0 8px; position: sticky; top: 50px; z-index: 5; }
+  .tabs button { flex: 1; background: none; border: 0; color: #cfe0d6; font-size: 15px; font-weight: 600;
+    padding: 10px 6px 12px; border-bottom: 3px solid transparent; }
+  .tabs button.on { color: #fff; border-bottom-color: #fff; }
+  .day { font-size: 13px; font-weight: 700; color: var(--dim); margin: 16px 0 6px; }
+  .hrow { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px; margin-bottom: 8px; }
+  .htop { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 14px; }
+  .htop small { color: var(--dim); }
+  .hthumbs { display: flex; gap: 6px; margin-top: 8px; }
+  .hthumbs img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; background: #e6ece8; }
+  .badge { font-size: 11.5px; font-weight: 700; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .b-new { background: #fbe9df; color: var(--warn); }
+  .b-exp { background: #e3eefc; color: #1d4f91; }
+  .b-up { background: #e2f2e8; color: var(--ok); }
+  .hsum { font-size: 14px; }
 </style>
 </head>
 <body>
 <header><b>Sample Log</b><span id="ver">v1.0</span></header>
-<main>
+<nav class="tabs"><button id="tabBtnCap" class="on">Capture</button><button id="tabBtnHist">History</button></nav>
+<main id="pageHist" style="display:none">
+  <div class="card hsum" id="histSum">-</div>
+  <div id="histList"></div>
+  <button class="btn btn-sec" id="histMore" style="display:none">Show more</button>
+</main>
+<main id="pageCap">
   <div class="card">
     <div class="row">
       <div>
@@ -97,19 +128,31 @@
     <h2>End of day</h2>
     <div class="status" id="status">-</div>
     <button class="btn btn-main" id="exportBtn">Export ZIP</button>
+    <div id="savePanel" style="display:none">
+      <div class="hint" id="saveInfo"></div>
+      <a class="btn btn-main" id="saveLink" style="text-align:center;text-decoration:none">Save ZIP</a>
+      <button class="btn btn-sec" id="shareBtn" style="display:none">Share ZIP (Files, Gmail, Drive...)</button>
+    </div>
     <button class="btn btn-sec" id="uploadBtn" style="display:none">Open upload page</button>
     <button class="btn btn-warn" id="clearBtn">Clear uploaded samples from phone</button>
-    <div class="hint">Order: 1. Export ZIP. 2. Open upload page and send the ZIP file(s). 3. Only then clear the phone.</div>
-    <div class="list" id="list"></div>
+    <div class="hint">Order: 1. Export ZIP, then tap Save for each ZIP. 2. Open upload page and send the ZIP file(s) from Downloads. 3. Only then clear the phone.</div>
   </div>
 </main>
 <input type="file" id="fileIn" accept="image/*" capture="environment" style="display:none">
+<div class="cam" id="cam">
+  <div class="cam-top"><b id="camTitle">Photo</b><button class="cam-x" id="camClose" aria-label="Close">✕</button></div>
+  <video id="video" autoplay playsinline muted></video>
+  <div class="cam-bot">
+    <button class="shutter" id="shutter" aria-label="Take photo"></button>
+    <button class="cam-alt" id="camAlt">Use the phone camera app instead</button>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 /* ===== SETTINGS ===== */
-const VERSION = "v1.0";
+const VERSION = "v1.3";
 const UPLOAD_URL = "https://www.dropbox.com/request/lwvop1m4tbrhmf83gvmi";
 const MAX_SIDE = 2400;          // max photo size in pixels (long side)
 const JPEG_Q = 0.92;
@@ -137,9 +180,11 @@ function mb(b) { return (b / 1048576).toFixed(1) + " MB"; }
 /* ===== DATABASE (metadata and photos kept apart) ===== */
 let db;
 function openDB() { return new Promise((res, rej) => {
-  const r = indexedDB.open("samplelog", 1);
+  const r = indexedDB.open("samplelog", 2);
   r.onupgradeneeded = e => { const d = e.target.result;
-    d.createObjectStore("meta", { keyPath: "id" }); d.createObjectStore("photos", { keyPath: "filename" }); };
+    if (!d.objectStoreNames.contains("meta")) d.createObjectStore("meta", { keyPath: "id" });
+    if (!d.objectStoreNames.contains("photos")) d.createObjectStore("photos", { keyPath: "filename" });
+    if (!d.objectStoreNames.contains("draft")) d.createObjectStore("draft"); };
   r.onsuccess = e => { db = e.target.result; res(); }; r.onerror = rej; }); }
 function txDone(tx) { return new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); }); }
 function allMeta() { return new Promise((res, rej) => {
@@ -148,9 +193,12 @@ function allMeta() { return new Promise((res, rej) => {
   q.onerror = rej; }); }
 function getPhoto(f) { return new Promise((res, rej) => {
   const q = db.transaction("photos").objectStore("photos").get(f); q.onsuccess = () => res(q.result); q.onerror = rej; }); }
+/* Clearing removes the photos only; the sample stays in History with its mini thumbnails */
 async function removeSamples(metas) {
   const tx = db.transaction(["meta","photos"], "readwrite");
-  metas.forEach(m => { tx.objectStore("meta").delete(m.id); m.files.forEach(f => tx.objectStore("photos").delete(f)); });
+  const now = new Date().toISOString();
+  metas.forEach(m => { m.files.forEach(f => tx.objectStore("photos").delete(f));
+    m.clearedAt = now; m.size = 0; tx.objectStore("meta").put(m); });
   return txDone(tx);
 }
 
@@ -167,7 +215,7 @@ function renderSlots() {
       if (current[i]) { d.className = "slot done";
         d.innerHTML = '<img src="' + current[i].thumb + '" alt=""><div class="tag">' + s.label + ' ✓ tap to retake</div>'; }
       else { d.className = "slot"; d.innerHTML = '<b>' + s.label + '</b><small>' + s.tip + '</small><small>Tap to take photo</small>'; }
-      d.onclick = () => { activeSlot = i; $("fileIn").value = ""; $("fileIn").click(); };
+      d.onclick = () => openCam(i);
       box.appendChild(d);
     });
   });
@@ -185,30 +233,83 @@ async function loadBitmap(file) {
 }
 function toBlob(c, q) { return new Promise(r => c.toBlob(r, "image/jpeg", q)); }
 
+/* Draft: every photo is saved at once, so nothing is lost if the phone reloads the page */
+function draftPut(key, val) { const tx = db.transaction("draft", "readwrite"); tx.objectStore("draft").put(val, key); return txDone(tx); }
+function draftClear() { const tx = db.transaction("draft", "readwrite"); tx.objectStore("draft").clear(); return txDone(tx); }
+function draftAll() { return new Promise((res, rej) => {
+  const st = db.transaction("draft").objectStore("draft"); const out = {};
+  const q = st.openCursor(); q.onsuccess = e => { const c = e.target.result; if (c) { out[c.key] = c.value; c.continue(); } else res(out); };
+  q.onerror = rej; }); }
+function saveFields() { draftPut("fields", { campaign: $("campaign").value, no: $("sampleNo").value, note: $("note").value }).catch(() => {}); }
+
+/* Turn any image source into a resized JPEG + small thumbnail */
+async function processSource(src, w0, h0, i) {
+  const sc = Math.min(1, MAX_SIDE / Math.max(w0, h0));
+  const c = document.createElement("canvas"); c.width = Math.round(w0*sc); c.height = Math.round(h0*sc);
+  c.getContext("2d").drawImage(src, 0, 0, c.width, c.height);
+  const t = document.createElement("canvas"); const ts = 220 / Math.max(c.width, c.height);
+  t.width = Math.round(c.width*ts); t.height = Math.round(c.height*ts);
+  t.getContext("2d").drawImage(c, 0, 0, t.width, t.height);
+  const thumb = t.toDataURL("image/jpeg", 0.7);
+  const m = document.createElement("canvas"); const ms = 96 / Math.max(t.width, t.height);
+  m.width = Math.round(t.width*ms); m.height = Math.round(t.height*ms);
+  m.getContext("2d").drawImage(t, 0, 0, m.width, m.height);
+  const mini = m.toDataURL("image/jpeg", 0.6); m.width = m.height = 0;
+  const blob = await toBlob(c, JPEG_Q);
+  c.width = c.height = 0; t.width = t.height = 0;
+  if (!blob) throw new Error("encode");
+  current[i] = { buf: await blob.arrayBuffer(), thumb, mini };
+  try { await draftPut("slot" + i, current[i]); saveFields(); } catch (e) {}
+  toast(SLOTS[i].label + " OK");
+}
+
+/* In-page camera (the browser stays open, uses much less memory) */
+let stream = null;
+async function openCam(i) {
+  activeSlot = i;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { useCameraApp(); return; }
+  $("camTitle").textContent = SLOTS[i].label;
+  $("cam").classList.add("on");
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false,
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 2560 }, height: { ideal: 1920 } } });
+    $("video").srcObject = stream;
+  } catch (err) { closeCam(); useCameraApp(); }
+}
+function closeCam() {
+  $("cam").classList.remove("on");
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  $("video").srcObject = null;
+}
+function useCameraApp() { closeCam(); $("fileIn").value = ""; $("fileIn").click(); }
+$("camClose").onclick = closeCam;
+$("camAlt").onclick = useCameraApp;
+$("shutter").onclick = async () => {
+  const v = $("video"), i = activeSlot;
+  if (!v.videoWidth) { toast("Camera not ready, wait one second"); return; }
+  $("shutter").disabled = true;
+  try { await processSource(v, v.videoWidth, v.videoHeight, i); }
+  catch (err) { toast("Photo failed, please try again"); }
+  $("shutter").disabled = false;
+  closeCam(); renderSlots();
+};
+
+/* Fallback: phone camera app */
 $("fileIn").onchange = async e => {
   const file = e.target.files && e.target.files[0]; const i = activeSlot;
   if (!file || i === null) return;
   const cell = $("slot" + i); if (cell) cell.classList.add("busy");
   try {
     const bmp = await loadBitmap(file);
-    const w0 = bmp.width, h0 = bmp.height, sc = Math.min(1, MAX_SIDE / Math.max(w0, h0));
-    const c = document.createElement("canvas"); c.width = Math.round(w0*sc); c.height = Math.round(h0*sc);
-    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
-    const t = document.createElement("canvas"); const ts = 220 / Math.max(c.width, c.height);
-    t.width = Math.round(c.width*ts); t.height = Math.round(c.height*ts);
-    t.getContext("2d").drawImage(c, 0, 0, t.width, t.height);
-    const thumb = t.toDataURL("image/jpeg", 0.7);
-    const blob = await toBlob(c, JPEG_Q);
-    if (bmp.close) bmp.close(); c.width = c.height = 0; t.width = t.height = 0;
-    if (!blob) throw new Error("encode");
-    current[i] = { buf: await blob.arrayBuffer(), thumb };
-    toast(SLOTS[i].label + " OK");
+    await processSource(bmp, bmp.width, bmp.height, i);
+    if (bmp.close) bmp.close();
   } catch (err) { toast("Photo failed, please try again"); }
   renderSlots();
 };
 
-$("sampleNo").oninput = renderSlots;
-$("campaign").oninput = renderSlots;
+$("sampleNo").oninput = () => { renderSlots(); saveFields(); };
+$("campaign").oninput = () => { renderSlots(); saveFields(); };
+$("note").oninput = saveFields;
 
 $("saveBtn").onclick = async () => {
   const c = campaign(), n = sampleNo();
@@ -218,7 +319,8 @@ $("saveBtn").onclick = async () => {
   $("saveBtn").disabled = true;
   const files = SLOTS.map(s => fname(c, n, s));
   const meta = { id, campaign: c, no: n, note: $("note").value.trim(), savedAt: new Date().toISOString(),
-    files, size: SLOTS.reduce((a, s, i) => a + current[i].buf.byteLength, 0), exportedAt: null };
+    files, size: SLOTS.reduce((a, s, i) => a + current[i].buf.byteLength, 0), exportedAt: null, clearedAt: null,
+    minis: SLOTS.map((s, i) => current[i].mini || current[i].thumb) };
   try {
     const tx = db.transaction(["meta","photos"], "readwrite");
     tx.objectStore("meta").put(meta);
@@ -226,26 +328,60 @@ $("saveBtn").onclick = async () => {
     await txDone(tx);
   } catch (err) { toast("Phone storage full. Export and upload, then clear.", 4000); renderSlots(); return; }
   current = {}; $("note").value = ""; $("sampleNo").value = n + 1;
+  try { await draftClear(); } catch (e) {}
   toast("Sample " + n + " saved");
   await refresh(); window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 /* ===== STATUS ===== */
 async function refresh() {
-  const metas = await allMeta();
-  savedIds = new Set(metas.map(m => m.id));
+  const all = await allMeta();
+  savedIds = new Set(all.map(m => m.id));
+  const metas = all.filter(m => !m.clearedAt);
   const notEx = metas.filter(m => !m.exportedAt), ex = metas.filter(m => m.exportedAt);
   const bytes = metas.reduce((a, m) => a + (m.size || 0), 0);
-  $("status").innerHTML = "<b>" + metas.length + "</b> sample(s) on phone (" + mb(bytes) + ")<br>" +
+  renderHistory(all);
+  $("status").innerHTML = "<b>" + metas.length + "</b> sample(s) with photos on phone (" + mb(bytes) + ")<br>" +
     "<b>" + notEx.length + "</b> not exported yet &nbsp; <b>" + ex.length + "</b> exported";
   $("exportBtn").textContent = notEx.length ? "Export ZIP (" + notEx.length + " sample" + (notEx.length > 1 ? "s" : "") + ")" :
     (ex.length ? "Export again (" + ex.length + ")" : "Export ZIP");
   $("clearBtn").style.display = ex.length ? "block" : "none";
-  $("list").innerHTML = metas.slice().reverse().map(m =>
-    "<div><span>" + m.campaign + " &nbsp;#" + m.no + (m.note ? " &nbsp;· " + m.note.replace(/</g,"&lt;") : "") + "</span>" +
-    (m.exportedAt ? '<span class="ex">exported</span>' : '<span class="nx">not exported</span>') + "</div>").join("");
   renderSlots();
 }
+
+/* ===== HISTORY (kept on the phone, even after clearing the photos) ===== */
+let histLimit = 60;
+function esc(t) { return String(t || "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function renderHistory(all) {
+  const list = all.slice().sort((a, b) => (b.savedAt || "").localeCompare(a.savedAt || ""));
+  const days = {};
+  list.forEach(m => { (days[m.campaign] = days[m.campaign] || []).push(m); });
+  const up = list.filter(m => m.clearedAt).length, ex = list.filter(m => m.exportedAt && !m.clearedAt).length;
+  $("histSum").innerHTML = "<b>" + list.length + "</b> sample(s) in total, " + Object.keys(days).length + " campaign(s)<br>" +
+    "<b>" + up + "</b> uploaded and cleared &nbsp; <b>" + ex + "</b> exported &nbsp; <b>" + (list.length - up - ex) + "</b> not exported";
+  let html = "", shown = 0, lastDay = null;
+  for (const m of list) {
+    if (shown >= histLimit) break;
+    if (m.campaign !== lastDay) { lastDay = m.campaign; html += '<div class="day">' + esc(m.campaign) + " (" + days[m.campaign].length + " samples)</div>"; }
+    const badge = m.clearedAt ? '<span class="badge b-up">uploaded</span>' : m.exportedAt ? '<span class="badge b-exp">exported</span>' : '<span class="badge b-new">not exported</span>';
+    const time = m.savedAt ? new Date(m.savedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+    html += '<div class="hrow"><div class="htop"><span><b>#' + m.no + "</b> <small>" + time + (m.note ? " · " + esc(m.note) : "") + "</small></span>" + badge + "</div>" +
+      (m.minis ? '<div class="hthumbs">' + m.minis.map(s => '<img src="' + s + '" alt="">').join("") + "</div>" : "") + "</div>";
+    shown++;
+  }
+  $("histList").innerHTML = html || '<div class="hint">No sample yet.</div>';
+  $("histMore").style.display = list.length > histLimit ? "block" : "none";
+}
+$("histMore").onclick = () => { histLimit += 60; refresh(); };
+function showTab(t) {
+  $("pageCap").style.display = t === "cap" ? "" : "none";
+  $("pageHist").style.display = t === "hist" ? "" : "none";
+  $("tabBtnCap").classList.toggle("on", t === "cap");
+  $("tabBtnHist").classList.toggle("on", t === "hist");
+  window.scrollTo(0, 0);
+}
+$("tabBtnCap").onclick = () => showTab("cap");
+$("tabBtnHist").onclick = () => showTab("hist");
 
 /* ===== EXPORT ===== */
 function csv(metas) {
@@ -253,44 +389,70 @@ function csv(metas) {
   metas.forEach(m => rows.push([m.campaign, m.no, m.savedAt, '"' + (m.note || "").replace(/"/g,'""') + '"'].concat(m.files).join(",")));
   return rows.join("\r\n");
 }
-function download(blob, name) {
-  const url = URL.createObjectURL(blob); const a = document.createElement("a");
-  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+/* Export, one ZIP at a time. The ZIP is prepared, then the user's own tap saves it
+   (Android blocks automatic downloads). A sample is marked "exported" only after that tap. */
+let exp = null;   // { todo, parts, p, stamp, url, blob, name, chunk }
+function mbs(b) { return (b / 1048576).toFixed(1) + " MB"; }
+async function preparePart() {
+  const e = exp, chunk = e.todo.slice(e.p * SAMPLES_PER_ZIP, (e.p + 1) * SAMPLES_PER_ZIP);
+  $("savePanel").style.display = "none";
+  $("exportBtn").style.display = "block"; $("exportBtn").disabled = true;
+  $("exportBtn").textContent = "Preparing ZIP " + (e.p + 1) + " of " + e.parts + "…";
+  let zip = new JSZip();
+  for (const m of chunk) for (const f of m.files) { const r = await getPhoto(f); if (r) zip.file(f, r.buf); }
+  zip.file("samples_" + e.stamp + "_part" + (e.p + 1) + ".csv", csv(chunk));
+  const blob = await zip.generateAsync({ type: "blob", compression: "STORE", mimeType: "application/zip" });
+  zip = null;
+  e.chunk = chunk; e.blob = blob;
+  e.name = "samples_" + e.stamp + "_part" + (e.p + 1) + "of" + e.parts + ".zip";
+  if (e.url) URL.revokeObjectURL(e.url);
+  e.url = URL.createObjectURL(blob);
+  $("saveLink").href = e.url; $("saveLink").download = e.name;
+  $("saveLink").textContent = "Save ZIP " + (e.p + 1) + " of " + e.parts + " (" + mbs(blob.size) + ")";
+  $("saveInfo").textContent = "File: " + e.name + ". Tap the button to save it in Downloads.";
+  let canShare = false;
+  try { canShare = !!(navigator.canShare && navigator.canShare({ files: [new File([blob], e.name, { type: "application/zip" })] })); } catch (x) {}
+  $("shareBtn").style.display = canShare ? "block" : "none";
+  $("exportBtn").style.display = "none"; $("exportBtn").disabled = false;
+  $("savePanel").style.display = "block";
 }
+async function partDone() {
+  const e = exp; if (!e || !e.chunk) return;
+  const tx = db.transaction("meta", "readwrite");
+  e.chunk.forEach(m => { m.exportedAt = new Date().toISOString(); tx.objectStore("meta").put(m); });
+  await txDone(tx);
+  e.chunk = null; e.blob = null;
+  const name = e.name;
+  setTimeout(() => { if (e.url) { URL.revokeObjectURL(e.url); e.url = null; } }, 60000);
+  e.p++;
+  if (e.p < e.parts) { toast("Saved: " + name + ". Preparing the next one…", 3000); setTimeout(() => preparePart().catch(() => exportFailed()), 1200); }
+  else { exp = null; $("savePanel").style.display = "none"; $("exportBtn").style.display = "block";
+    toast("All ZIP files saved in Downloads. Now tap Open upload page.", 6000); refresh(); }
+}
+function exportFailed() { exp = null; $("savePanel").style.display = "none"; $("exportBtn").style.display = "block";
+  $("exportBtn").disabled = false; toast("Export failed. Try again.", 4000); refresh(); }
+$("saveLink").onclick = () => { setTimeout(() => partDone(), 800); };
+$("shareBtn").onclick = async () => {
+  const e = exp; if (!e || !e.blob) return;
+  try { await navigator.share({ files: [new File([e.blob], e.name, { type: "application/zip" })], title: e.name }); partDone(); }
+  catch (x) { toast("Not shared. Use Save ZIP instead."); }
+};
 $("exportBtn").onclick = async () => {
   if (typeof JSZip === "undefined") { toast("Export needs internet once. Connect and reload.", 4000); return; }
-  let metas = await allMeta();
+  let metas = (await allMeta()).filter(m => !m.clearedAt);
   let todo = metas.filter(m => !m.exportedAt);
   if (!todo.length) todo = metas;
   if (!todo.length) { toast("Nothing to export"); return; }
-  $("exportBtn").disabled = true;
-  const stamp = today() + "_" + String(new Date().getHours()).padStart(2,"0") + String(new Date().getMinutes()).padStart(2,"0");
-  const parts = Math.ceil(todo.length / SAMPLES_PER_ZIP);
-  try {
-    for (let p = 0; p < parts; p++) {
-      const chunk = todo.slice(p * SAMPLES_PER_ZIP, (p + 1) * SAMPLES_PER_ZIP);
-      $("exportBtn").textContent = "Preparing ZIP " + (p+1) + " of " + parts + "…";
-      let zip = new JSZip();
-      for (const m of chunk) for (const f of m.files) { const r = await getPhoto(f); if (r) zip.file(f, r.buf); }
-      zip.file("samples_" + stamp + "_part" + (p+1) + ".csv", csv(chunk));
-      const blob = await zip.generateAsync({ type: "blob", compression: "STORE" });
-      zip = null;
-      download(blob, "samples_" + stamp + "_part" + (p+1) + "of" + parts + ".zip");
-      const tx = db.transaction("meta", "readwrite");
-      chunk.forEach(m => { m.exportedAt = new Date().toISOString(); tx.objectStore("meta").put(m); });
-      await txDone(tx);
-      await new Promise(r => setTimeout(r, 1500));
-    }
-    toast(parts + " ZIP file(s) saved in Downloads. Now open the upload page.", 5000);
-  } catch (err) { toast("Export failed. Try again.", 4000); }
-  $("exportBtn").disabled = false; refresh();
+  const d = new Date();
+  exp = { todo, parts: Math.ceil(todo.length / SAMPLES_PER_ZIP), p: 0, url: null,
+    stamp: today() + "_" + String(d.getHours()).padStart(2,"0") + String(d.getMinutes()).padStart(2,"0") };
+  try { await preparePart(); } catch (err) { exportFailed(); }
 };
 $("uploadBtn").onclick = () => window.open(UPLOAD_URL, "_blank");
 $("clearBtn").onclick = async () => {
-  const ex = (await allMeta()).filter(m => m.exportedAt);
+  const ex = (await allMeta()).filter(m => m.exportedAt && !m.clearedAt);
   if (!ex.length) return;
-  if (!confirm("Remove " + ex.length + " exported sample(s) from this phone?\n\nOnly do this AFTER the ZIP files are uploaded.")) return;
+  if (!confirm("Remove the photos of " + ex.length + " exported sample(s) from this phone?\n\nOnly do this AFTER the ZIP files are uploaded. The samples stay in History.")) return;
   await removeSamples(ex); toast("Phone cleared"); refresh();
 };
 
@@ -305,6 +467,12 @@ $("clearBtn").onclick = async () => {
   const metas = await allMeta();
   const same = metas.filter(m => m.campaign === today());
   $("sampleNo").value = same.length ? Math.max(...same.map(m => m.no)) + 1 : "";
+  try {
+    const d = await draftAll(); let n = 0;
+    SLOTS.forEach((s, i) => { if (d["slot" + i]) { current[i] = d["slot" + i]; n++; } });
+    if (d.fields && n) { $("campaign").value = d.fields.campaign || today(); $("sampleNo").value = d.fields.no || ""; $("note").value = d.fields.note || ""; }
+    if (n) toast(n + " photo(s) of the current sample restored");
+  } catch (e) {}
   renderSlots();
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("./sw.js").catch(() => {});
 })();
